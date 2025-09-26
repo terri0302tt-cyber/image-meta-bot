@@ -7,10 +7,10 @@ on:
       - 'images/**'
       - '.github/workflows/randomize-meta.yml'
   schedule:
-    - cron: '0 3 * * *'   # каждый день в 03:00 UTC
+    - cron: '0 3 * * *'   # ежедневно в 03:00 UTC
 
 permissions:
-  contents: write          # разрешить workflow делать git commit/push
+  contents: write
 
 jobs:
   randomize:
@@ -23,42 +23,68 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libimage-exiftool-perl
 
-      - name: Process 10-20 JPGs
+      - name: Apply requested EXIF/XMP and rename
         shell: bash
         run: |
           set -euo pipefail
           IMG_DIR="images"
-          COUNT=$(( RANDOM % 11 + 10 ))   # 10..20
+          mapfile -t FILES < <(find "$IMG_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' \))
+          [ ${#FILES[@]} -gt 0 ] || { echo "No JPG files found"; exit 0; }
 
-          # Список JPG/JPEG
-          mapfile -t ALL < <(find "$IMG_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' \))
-          if [ ${#ALL[@]} -eq 0 ]; then
-            echo "No JPG files found"; exit 0
-          fi
+          # Текущее UTC-время в EXIF-формате
+          now="$(date -u +'%Y:%m:%d %H:%M:%S')"
 
-          shuf -e "${ALL[@]}" | head -n "$COUNT" > /tmp/todo.txt
+          # Модели iPhone
+          MODELS=(
+            "iPhone 8" "iPhone XR" "iPhone 11" "iPhone 11 Pro"
+            "iPhone 12" "iPhone 12 Pro" "iPhone 13" "iPhone 13 Pro Max"
+            "iPhone 14" "iPhone 15 Pro"
+          )
 
-          start_epoch=$(date -u -d "2015-01-01" +%s)
-          end_epoch=$(date -u +%s)
-          MAKES=(Canon Nikon Sony Fujifilm Olympus Pentax Panasonic Leica Apple Samsung)
+          # Диафрагмы и экспоз.метр
+          FNUMS=("1.5" "1.6" "1.8" "2.0")
+          # В EXIF стандартное имя — Pattern (Matrix у многих камер отображается как Pattern/Multi-segment)
+          METERING=("Pattern" "Pattern")  # второй элемент — «Matrix» по смыслу, но пишем Pattern для совместимости
 
-          while IFS= read -r f; do
-            rand_epoch=$(( start_epoch + (RANDOM<<15 | RANDOM) % (end_epoch - start_epoch + 1) ))
-            dt=$(date -u -d "@$rand_epoch" +'%Y:%m:%d %H:%M:%S')
-            make=${MAKES[$RANDOM % ${#MAKES[@]}]}
+          for f in "${FILES[@]}"; do
+            # Случайные поля
+            model="${MODELS[$RANDOM % ${#MODELS[@]}]}"
             artist="user$(printf '%04d' $((RANDOM % 10000)))"
+            fnum="${FNUMS[$RANDOM % ${#FNUMS[@]}]}"
+            metering="${METERING[$RANDOM % ${#METERING[@]}]}"
 
+            # Случайный dc:identifier: IMG- + 11 цифр
+            rand11="$(tr -dc '0-9' </dev/urandom | head -c 11)"
+            identifier="IMG-${rand11}"
+
+            # Проставляем EXIF/XMP
             exiftool -overwrite_original \
-              -DateTimeOriginal="$dt" -CreateDate="$dt" -ModifyDate="$dt" \
-              -Make="$make" -Artist="$artist" -XMP:Subject+="RandomizedByMetaBot" "$f"
+              -DateTimeOriginal="$now" -CreateDate="$now" -ModifyDate="$now" \
+              -Make="Apple" -Model="$model" -Artist="$artist" \
+              -FNumber="$fnum" -ApertureValue="$fnum" \
+              -ExposureMode="Auto" -WhiteBalance="Auto" -SceneCaptureType="Standard" \
+              -LensMake="Apple" -LensModel="Apple" \
+              -Flash=0 \
+              -MeteringMode="$metering" \
+              -XMP-dc:Coverage="Northern America" \
+              -XMP-dc:Format="image/jpeg" \
+              -XMP-dc:Identifier="$identifier" \
+              -XMP-dc:Language="en" \
+              -GPS*= \
+              "$f"
 
-            exiftool -overwrite_original -GPS*= "$f"
-          done </tmp/todo.txt
+            # Переименуем файл под identifier (сохраняя расширение)
+            dir="${f%/*}"; ext="${f##*.}"
+            newpath="${dir}/${identifier}.${ext,,}"
+            if [ "$f" != "$newpath" ]; then
+              git mv -f "$f" "$newpath" || mv -f "$f" "$newpath"
+            fi
+          done
 
       - name: Commit results
         run: |
           git config user.email "action@github.com"
           git config user.name "meta-bot"
           git add -A
-          git commit -m "Randomized metadata $(date -u)" || echo "No changes"
+          git commit -m "Apply custom EXIF/XMP (Apple/iPhone, dc fields, Artist, FNumber, etc.)" || echo "No changes"
           git push || true
