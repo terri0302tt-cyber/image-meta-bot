@@ -1,45 +1,56 @@
 name: Randomize image metadata daily
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"   # каждый день в 03:00 UTC
-  workflow_dispatch: {}    # можно запускать вручную
+    - cron: '0 3 * * *'   # каждый день в 03:00 UTC
 
 jobs:
   randomize:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install exiftool
         run: |
           sudo apt-get update
           sudo apt-get install -y libimage-exiftool-perl
 
-      - name: Pick 10-20 JPG and randomize metadata
+      - name: Process 10-20 JPGs
+        shell: bash
         run: |
-          set -e
-          files=( $(find images -type f -iname "*.jpg" -o -iname "*.jpeg" | shuf -n $((RANDOM%11+10))) )
-          for f in "${files[@]}"; do
-            dt=$(date -u -d "@$(( (RANDOM<<15)|RANDOM ))" +'%Y:%m:%d %H:%M:%S')
-            make=$(shuf -n1 -e Nikon Canon Sony Fujifilm Olympus Pentax Apple Samsung)
-            artist="user$((RANDOM%10000))"
+          set -euo pipefail
+          IMG_DIR="images"
+          COUNT=$(( RANDOM % 11 + 10 ))   # 10..20
+
+          mapfile -t ALL < <(find "$IMG_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' \))
+          if [ ${#ALL[@]} -eq 0 ]; then
+            echo "No JPG files found"; exit 0
+          fi
+
+          shuf -e "${ALL[@]}" | head -n "$COUNT" > /tmp/todo.txt
+
+          start_epoch=$(date -u -d "2015-01-01" +%s)
+          end_epoch=$(date -u +%s)
+          MAKES=(Canon Nikon Sony Fujifilm Olympus Pentax Panasonic Leica Apple Samsung)
+
+          while IFS= read -r f; do
+            rand_epoch=$(( start_epoch + (RANDOM<<15 | RANDOM) % (end_epoch - start_epoch + 1) ))
+            dt=$(date -u -d "@$rand_epoch" +'%Y:%m:%d %H:%M:%S')
+            make=${MAKES[$RANDOM % ${#MAKES[@]}]}
+            artist="user$(printf '%04d' $((RANDOM % 10000)))"
+
             exiftool -overwrite_original \
-              -DateTimeOriginal="$dt" \
-              -CreateDate="$dt" \
-              -ModifyDate="$dt" \
-              -Make="$make" \
-              -Artist="$artist" \
-              "$f"
-          done
+              -DateTimeOriginal="$dt" -CreateDate="$dt" -ModifyDate="$dt" \
+              -Make="$make" -Artist="$artist" -XMP:Subject+="RandomizedByMetaBot" "$f"
+
+            exiftool -overwrite_original -GPS*= "$f"
+          done </tmp/todo.txt
 
       - name: Commit results
         run: |
           git config user.email "action@github.com"
           git config user.name "meta-bot"
-          git add images || true
-          git commit -m "Randomized metadata on $(date -u)" || true
+          git add -A
+          git commit -m "Randomized metadata $(date -u)" || echo "No changes"
           git push || true
-
