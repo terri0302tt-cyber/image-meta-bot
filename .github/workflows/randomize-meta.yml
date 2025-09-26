@@ -1,9 +1,13 @@
 name: Randomize image metadata daily
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:        # запуск кнопкой
+  push:                     # запуск от любого нового коммита
+    paths:
+      - 'images/**'
+      - '.github/workflows/randomize-meta.yml'
   schedule:
-    - cron: '0 3 * * *'   # каждый день в 03:00 UTC
+    - cron: '0 3 * * *'     # ежедневный запуск по расписанию (0 — это цифра ноль)
 
 jobs:
   randomize:
