@@ -1,1 +1,45 @@
+name: Randomize image metadata daily
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # каждый день в 03:00 UTC
+  workflow_dispatch: {}    # можно запускать вручную
+
+jobs:
+  randomize:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install exiftool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libimage-exiftool-perl
+
+      - name: Pick 10-20 JPG and randomize metadata
+        run: |
+          set -e
+          files=( $(find images -type f -iname "*.jpg" -o -iname "*.jpeg" | shuf -n $((RANDOM%11+10))) )
+          for f in "${files[@]}"; do
+            dt=$(date -u -d "@$(( (RANDOM<<15)|RANDOM ))" +'%Y:%m:%d %H:%M:%S')
+            make=$(shuf -n1 -e Nikon Canon Sony Fujifilm Olympus Pentax Apple Samsung)
+            artist="user$((RANDOM%10000))"
+            exiftool -overwrite_original \
+              -DateTimeOriginal="$dt" \
+              -CreateDate="$dt" \
+              -ModifyDate="$dt" \
+              -Make="$make" \
+              -Artist="$artist" \
+              "$f"
+          done
+
+      - name: Commit results
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "meta-bot"
+          git add images || true
+          git commit -m "Randomized metadata on $(date -u)" || true
+          git push || true
 
