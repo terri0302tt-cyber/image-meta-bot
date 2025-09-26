@@ -1,13 +1,16 @@
 name: Randomize image metadata daily
 
 on:
-  workflow_dispatch:        # запуск кнопкой
-  push:                     # запуск от любого нового коммита
+  workflow_dispatch:
+  push:
     paths:
       - 'images/**'
       - '.github/workflows/randomize-meta.yml'
   schedule:
-    - cron: '0 3 * * *'     # ежедневный запуск по расписанию (0 — это цифра ноль)
+    - cron: '0 3 * * *'   # каждый день в 03:00 UTC
+
+permissions:
+  contents: write          # разрешить workflow делать git commit/push
 
 jobs:
   randomize:
@@ -27,6 +30,7 @@ jobs:
           IMG_DIR="images"
           COUNT=$(( RANDOM % 11 + 10 ))   # 10..20
 
+          # Список JPG/JPEG
           mapfile -t ALL < <(find "$IMG_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' \))
           if [ ${#ALL[@]} -eq 0 ]; then
             echo "No JPG files found"; exit 0
