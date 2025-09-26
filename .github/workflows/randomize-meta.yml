@@ -2,74 +2,86 @@ name: Randomize image metadata daily
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'images/**'
+      - '.github/workflows/randomize-meta.yml'
   schedule:
-    - cron: "0 0 * * *" # запуск каждый день в 00:00 UTC
+    - cron: '0 3 * * *'   # ежедневно 03:00 UTC
+
+permissions:
+  contents: write          # нужно для git push из workflow
 
 jobs:
   randomize:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true   # использовать GITHUB_TOKEN для push
 
       - name: Install exiftool
-        run: sudo apt-get install -y exiftool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libimage-exiftool-perl
 
       - name: Apply requested EXIF/XMP and rename (robust)
+        shell: bash
         run: |
           set -u
-          for f in images/*.{jpg,jpeg,JPG,JPEG}; do
-            [ -e "$f" ] || continue
+          IMG_DIR="images"
+          mapfile -t FILES < <(find "$IMG_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' \))
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No JPG files found"; exit 0
+          fi
 
-            # генерируем IMG-(11 цифр)
+          now="$(date -u +'%Y:%m:%d %H:%M:%S')"
+          MODELS=("iPhone 8" "iPhone XR" "iPhone 11" "iPhone 11 Pro" "iPhone 12" "iPhone 12 Pro" "iPhone 13" "iPhone 13 Pro Max" "iPhone 14" "iPhone 15 Pro")
+          FNUMS=("1.5" "1.6" "1.8" "2.0")
+          METERING=("Pattern" "Pattern")  # совместимо с Matrix
+
+          for f in "${FILES[@]}"; do
+            echo "Processing: $f"
+
+            # IMG-<11 цифр> без пайпов (чтобы не ловить Broken pipe)
             seed="$(printf '%05d%05d%05d' "$RANDOM" "$RANDOM" "$RANDOM")"
             rand11="${seed:0:11}"
             identifier="IMG-${rand11}"
 
-            # случайные параметры
-            artist="Author"
-            coverage="Northern America"
-            date="$(date -u +"%Y:%m:%d %H:%M:%S")"
-            format="image/jpeg"
-            language="en"
-            manufacturer="Apple"
-
-            # случайный выбор из списков
-            models=("iPhone 8" "iPhone XR" "iPhone 11" "iPhone 11 Pro" "iPhone 12" "iPhone 12 Pro" "iPhone 13" "iPhone 13 Pro Max" "iPhone 14" "iPhone 15 Pro")
-            fnums=("f/1.5" "f/1.6" "f/1.8" "f/2.0")
-            metering=("Pattern" "Matrix")
-
-            model="${models[$RANDOM % ${#models[@]}]}"
-            fnum="${fnums[$RANDOM % ${#fnums[@]}]}"
-            metering_mode="${metering[$RANDOM % ${#metering[@]}]}"
-
-            echo "Обрабатываем: $f → $identifier"
+            model="${MODELS[$RANDOM % ${#MODELS[@]}]}"
+            artist="user$(printf '%04d' $((RANDOM % 10000)))"
+            fnum="${FNUMS[$RANDOM % ${#FNUMS[@]}]}"
+            metering="${METERING[$RANDOM % ${#METERING[@]}]}"
 
             exiftool -overwrite_original \
-              -Artist="$artist" \
-              -Coverage="$coverage" \
-              -DateTimeOriginal="$date" \
-              -FileModifyDate="$date" \
-              -Format="$format" \
-              -Identifier="$identifier" \
-              -Language="$language" \
-              -Make="$manufacturer" \
-              -Model="$model" \
-              -FNumber="$fnum" \
-              -ExposureMode="Auto" \
-              -WhiteBalance="Auto" \
-              -SceneCaptureType="Standard" \
-              -LensMake="Apple" \
-              -LensModel="Apple" \
-              -Flash="Flash did not fire" \
-              -MeteringMode="$metering_mode" \
-              "$f"
+              -DateTimeOriginal="$now" -CreateDate="$now" -ModifyDate="$now" \
+              -Make="Apple" -Model="$model" -Artist="$artist" \
+              -FNumber="$fnum" -ApertureValue="$fnum" \
+              -ExposureMode="Auto" -WhiteBalance="Auto" -SceneCaptureType="Standard" \
+              -LensMake="Apple" -LensModel="Apple" \
+              -Flash=0 \
+              -MeteringMode="$metering" \
+              -XMP-dc:Coverage="Northern America" \
+              -XMP-dc:Format="image/jpeg" \
+              -XMP-dc:Identifier="$identifier" \
+              -XMP-dc:Language="en" \
+              -GPS*= \
+              "$f" || echo "exiftool warned on: $f"
+
+            # Переименуем под identifier
+            dir="${f%/*}"; ext="${f##*.}"
+            newpath="${dir}/${identifier}.${ext,,}"
+            if [ "$f" != "$newpath" ]; then
+              echo "Renaming to: $newpath"
+              git mv -f "$f" "$newpath" 2>/dev/null || mv -f "$f" "$newpath"
+            fi
           done
 
-      - name: Commit changes
+      - name: Commit results
         run: |
-          git config --global user.name "actions-user"
-          git config --global user.email "actions@github.com"
-          git add images/*
-          git commit -m "Randomized metadata $(date -u)" || echo "No changes to commit"
+          git config user.email "action@github.com"
+          git config user.name "meta-bot"
+          git add -A
+          git commit -m "Randomized metadata $(date -u)" || echo "No changes"
           git push
